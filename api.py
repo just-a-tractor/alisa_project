@@ -14,6 +14,7 @@ board = chess.Board()
 logging.basicConfig(level=logging.INFO)
 
 sessionStorage = {}
+won_flag = 0
 
 
 @app.route('/post', methods=['POST'])
@@ -65,7 +66,7 @@ def make_field(bad_field):
                 listi.append(tpl.format(pieces[a]))
             else:
                 tpl1 = '{0}' + vbar
-                listi.append(tpl1.format(pieces[a]))
+                listi.append(tpl1.format(pieces[a])) if a == 0 else listi.append(tpl1.format('' + pieces[a]))
         return str(num) + vbar + ''.join(listi)
 
     global topline, midline, botline, tpl, pieces, vbar
@@ -78,9 +79,6 @@ def make_field(bad_field):
     # some noise
     pieces = u''.join(chr(9812 + x) for x in range(12))
     pieces = u'　' + pieces[:6][::-1] + pieces[6:]
-    allbox = u''.join(chr(9472 + x) for x in range(200))
-    # box = [allbox[i] for i in (2, 0, 12, 16, 20, 24, 44, 52, 28, 36, 60)]
-    # (vbar, hbar, ul, ur, ll, lr, nt, st, wt, et, plus) = box
     (vbar, hbar, ul, ur, ll, lr, nt, st, wt, et, plus) = '┇ ┅ ┏ ┓ ┗ ┛ ┳ ┻ ┣ ┫ ╋'.split()
 
     h3 = hbar  # * 2
@@ -97,9 +95,25 @@ def make_field(bad_field):
     return ans
 
 
+def move_choose(brd):
+    lm = brd.legal_moves
+    per = ''
+    znp = 0
+    for i in lm:
+        zn = brd.piece_type_at(int(i.to_square))
+        if not zn:
+            zn = 0
+        if zn > znp:
+            per = i
+            znp = zn
+
+    return per if znp else random.choice(list(lm))
+
+
 def handle_dialog(req, res):
     user_id = req['session']['user_id']
     global board
+    global won_flag
     if req['session']['new']:
         board = chess.Board()
         sessionStorage[user_id] = {'suggests': ["Помощь", "Посмотреть поле", "Что ты умеешь?"]}
@@ -108,77 +122,68 @@ def handle_dialog(req, res):
         res['response']['buttons'] = get_suggests(user_id)
         return
     res['response']['buttons'] = get_suggests(user_id)
-
-    if board.is_game_over():
-        res['response']['text'] = 'Вы выиграли. Хотеите играть снова?'
-        sessionStorage[user_id] = {'suggests': [
-            "Нет",
-            "Да"]}
-        return
-    if req['request']['original_utterance'].lower() == 'нет':
-        res['response']['end_session'] = True
-        return 
-    elif req['request']['original_utterance'].lower() == 'да':
-        res['response']['text'] = 'Отлично, сыграем ещё раз!'
-        sessionStorage[user_id] = {'suggests': ["Помощь", "Посмотреть поле", "Что ты умеешь?"]}
-        board = chess.Board()
-        return
-
-    res['response']['text'] = 'Ваш ход'
-    a = req['request']['original_utterance']
+    if not won_flag:
+        res['response']['text'] = 'Ваш ход'
+    a = req['request']['original_utterance'].lower()
     if not a:
         return
 
-    if a.lower() == 'помощь' or a.lower() == 'что ты умеешь?':
-        res['response']['text'] = 'Это шахматы. Я пока только учусь. ' \
-                                  'Ход указывайте в виде "e2e4". ' \
-                                  'Если вы хотите увидеть всё игровое поле, нажмите кнопку "Посмотреть поле".'
-        return
+    if won_flag == 0.5:
+        if req['request']['original_utterance'].lower() == 'нет':
+            res['response']['text'] = 'Тогда до свидания!'
+            sessionStorage[user_id] = {'suggests': []}
+            res['response']['end_session'] = True
+            return
+        elif req['request']['original_utterance'].lower() == 'да':
+            res['response']['text'] = 'Отлично, сыграем ещё раз!'
+            sessionStorage[user_id] = {'suggests': ["Помощь", "Посмотреть поле", "Что ты умеешь?"]}
+            board = chess.Board()
+            won_flag = 0
+            res['response']['buttons'] = get_suggests(user_id)
+            return
 
-    elif a.lower() == 'посмотреть поле':
-        res['response']['text'] = make_field(str(board))
-        return
+    else:
+        if a.lower() == 'помощь' or a.lower() == 'что ты умеешь?':
+            res['response']['text'] = 'Это шахматы. Я пока только учусь. ' \
+                                      'Ход указывайте в виде "e2e4". ' \
+                                      'Если вы хотите увидеть всё игровое поле, нажмите кнопку "Посмотреть поле".'
+            return
 
-    try:
-        mymv = chess.Move.from_uci(a)
-        board.push_san(board.san(mymv))
+        elif a.lower() == 'посмотреть поле':
+            res['response']['text'] = make_field(str(board))
+            return
 
-        b = board.legal_moves
-        mv = chess.Move.from_uci(str(random.choice(list(b))))
+        elif a.lower() == 'отмени ход':
+            try:
+                board.pop()
+                board.pop()
+            except Exception as e:
+                if str(e) == 'pop from empty list':
+                    pass
+            return
+
+        try:
+            mymv = chess.Move.from_uci(a)
+            board.push_san(board.san(mymv))
+        except Exception as e:
+            res['response']['text'] = 'Так ходить нельзя!'  # .format(e)
+            return
+
+        if board.is_game_over():
+            res['response']['text'] = 'Вы выиграли. Хотите играть снова?'
+            sessionStorage[user_id] = {'suggests': [
+                "Нет",
+                "Да"]}
+            won_flag = 0.5
+            res['response']['buttons'] = get_suggests(user_id)
+            return
+
+        mv = chess.Move.from_uci(str(move_choose(board)))
         board.push_san(board.san(mv))
         res['response']['text'] = str(mv)
-    except Exception as e:
-        res['response']['text'] = 'Так ходить нельзя! {}'.format(e)
+        sessionStorage[user_id] = {'suggests': ["Помощь", "Посмотреть поле", "Что ты умеешь?", "Отмени ход"]}
+        res['response']['buttons'] = get_suggests(user_id)
         return
-
-    '''user_id = req['session']['user_id']
-
-    if req['session']['new']:
-
-        sessionStorage[user_id] = {'suggests': [
-                "Не хочу.",
-                "Давай"]}
-
-        res['response']['text'] = 'Привет! Сыграем в шахматы?'
-
-        return
-    if req['request']['original_utterance'].lower() in ['ладно',
-                                                        'хорошо',
-                                                        'давай',
-                                                        'да',
-                                                        'уговорила',
-                                                        "договорились"]:
-        # Пользователь согласился, прощаемся.
-
-        game()
-
-        """res['response']['text'] = 'Слона можно найти на Яндекс.Маркете!'
-        res['response']['end_session'] = True
-        return"""
-
-    # Если нет, то убеждаем его купить слона!
-    res['response']['text'] = 'Ладно, пока!'
-    return'''
 
 
 # Функция возвращает подсказки для ответа.
